@@ -6,6 +6,11 @@ Exposes endpoints:
         Input  (JSON): { "text": "..." }
         Output (JSON): { "stress_level": <int 0–100>, "emotion": "<string>" }
 
+    POST /analyze-text-simple
+        Input  (JSON): { "diaryText": "..." }
+        Output (JSON): { "textStress": <int 0–100> }
+        Lightweight keyword-based analysis — no ML models, < 5 ms response.
+
     POST /analyze-face
         Input  (multipart/form-data): image file in field "image"
         Output (JSON): { "stress_level": <int 0–100>, "emotion": "<string>" }
@@ -393,6 +398,132 @@ def analyze_voice_endpoint():
                     os.remove(p)
                 except OSError:
                     pass
+
+
+# ---------------------------------------------------------------------------
+# POST /analyze-text-simple   (keyword-based, no ML models)
+# ---------------------------------------------------------------------------
+# Curated word sets — kept at module level so they are built once.
+_NEGATIVE_WORDS = frozenset([
+    # anxiety / fear
+    "stressed", "stress", "anxious", "anxiety", "worried", "worry", "nervous",
+    "panic", "scared", "afraid", "terrified", "dread", "uneasy", "tense",
+    "overwhelmed", "overthinking", "restless", "insecure",
+    # sadness / despair
+    "sad", "depressed", "depression", "hopeless", "helpless", "miserable",
+    "lonely", "alone", "crying", "cry", "tears", "grief", "heartbroken",
+    "suffering", "pain", "painful", "hurt", "broken", "empty", "numb",
+    # anger / frustration
+    "angry", "furious", "rage", "frustrated", "irritated", "annoyed",
+    "hate", "hatred", "resentment", "bitter", "hostile",
+    # fatigue / burnout
+    "exhausted", "tired", "burnout", "drained", "fatigued", "sleepless",
+    "insomnia", "overworked",
+    # general negativity
+    "terrible", "awful", "horrible", "worst", "bad", "ugly", "fail",
+    "failure", "useless", "worthless", "pathetic", "disgusted", "sick",
+    "trapped", "stuck", "lost", "confused", "disappointed", "regret",
+    "ashamed", "guilty", "jealous", "envious",
+    # crisis
+    "suicide", "suicidal", "die", "death", "kill", "harm", "self-harm",
+])
+
+_POSITIVE_WORDS = frozenset([
+    # happiness / joy
+    "happy", "joy", "joyful", "cheerful", "glad", "delighted", "excited",
+    "thrilled", "wonderful", "amazing", "fantastic", "great", "awesome",
+    "good", "excellent", "brilliant", "beautiful",
+    # calm / peace
+    "calm", "peaceful", "relaxed", "serene", "tranquil", "content",
+    "comfortable", "safe", "secure", "balanced", "steady",
+    # gratitude / love
+    "grateful", "thankful", "blessed", "love", "loved", "caring",
+    "kind", "compassionate", "warm", "supportive", "appreciated",
+    # hope / motivation
+    "hopeful", "optimistic", "motivated", "inspired", "confident",
+    "strong", "proud", "determined", "energetic", "refreshed",
+    # general positivity
+    "fun", "enjoy", "smile", "laugh", "better", "best", "success",
+    "progress", "achieved", "accomplished", "improved", "healing",
+])
+
+# High-impact crisis words that push stress much higher per occurrence.
+_CRISIS_WORDS = frozenset([
+    "suicide", "suicidal", "self-harm", "kill", "die", "death",
+])
+
+
+def _keyword_stress(text: str) -> int:
+    """Return a stress percentage 0-100 from simple keyword analysis.
+
+    Algorithm
+    ---------
+    1.  Start at a neutral baseline of 30.
+    2.  For every negative keyword found, add  +5  (crisis words add +15).
+    3.  For every positive keyword found, subtract -4.
+    4.  Clamp the result to [0, 100].
+
+    The scoring is intentionally conservative: short texts with one or two
+    negative words land in the 35-45 range (mild), while diary entries
+    loaded with crisis language quickly reach 90+.
+    """
+    words = set(text.lower().split())  # unique tokens (fast O(n))
+
+    neg_hits = words & _NEGATIVE_WORDS
+    pos_hits = words & _POSITIVE_WORDS
+    crisis_hits = words & _CRISIS_WORDS
+
+    # Baseline
+    score = 30.0
+
+    # Regular negative / positive adjustments
+    score += len(neg_hits) * 5
+    score -= len(pos_hits) * 4
+
+    # Crisis words get an extra bump (they are already counted as negative)
+    score += len(crisis_hits) * 10
+
+    return int(max(0, min(100, round(score))))
+
+
+@app.route("/analyze-text-simple", methods=["POST"])
+def analyze_text_simple():
+    """
+    Lightweight, keyword-based diary stress analysis.
+
+    Accepts JSON body:  { "diaryText": "some user diary text" }
+    Returns:            { "textStress": <int 0-100> }
+
+    • Uses no ML models — responds in < 5 ms.
+    • Empty / missing text safely returns { "textStress": 0 }.
+    """
+
+    # ── 1. Parse request body ─────────────────────────────────────────────
+    data = request.get_json(silent=True)
+
+    if data is None:
+        return jsonify({
+            "error": "Invalid input. Request body must be valid JSON."
+        }), 400
+
+    diary_text = data.get("diaryText", "")
+
+    # ── 2. Validate input ─────────────────────────────────────────────────
+    if not isinstance(diary_text, str):
+        return jsonify({
+            "error": "Invalid input. 'diaryText' must be a string."
+        }), 400
+
+    diary_text = diary_text.strip()
+
+    # Empty text → 0 stress (safe default)
+    if not diary_text:
+        return jsonify({"textStress": 0}), 200
+
+    # ── 3. Compute keyword-based stress ───────────────────────────────────
+    stress = _keyword_stress(diary_text)
+
+    return jsonify({"textStress": stress}), 200
 
 
 # ---------------------------------------------------------------------------
