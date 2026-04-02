@@ -755,6 +755,87 @@ def _keyword_stress(text: str) -> int:
 
     return int(max(0, min(100, round(score))))
 
+@app.route("/analyze-all", methods=["POST"])
+def analyze_all():
+
+    # -----------------------------
+    # GET INPUTS
+    # -----------------------------
+    text = request.form.get("text", "")
+    image = request.files.get("image")
+    audio = request.files.get("audio")
+
+    face_score = 0
+    voice_score = 0
+    text_score = 0
+    emotion = "neutral"
+
+    # -----------------------------
+    # TEXT ANALYSIS
+    # -----------------------------
+    if text:
+        text_result = analyze_paragraph(text)
+        if text_result:
+            text_score = text_result["stress_intensity"]
+            emotion = text_result["dominant_emotion"]
+
+    # -----------------------------
+    # FACE ANALYSIS
+    # -----------------------------
+    if image:
+        fd, tmp_path = tempfile.mkstemp(suffix=".jpg")
+        os.close(fd)
+        image.save(tmp_path)
+
+        try:
+            result = DeepFace.analyze(tmp_path, actions=['emotion'], enforce_detection=False)
+            if isinstance(result, list):
+                result = result[0]
+
+            face_emotion = result.get("dominant_emotion", "neutral")
+            face_score = get_stress_from_emotion(face_emotion)
+
+        except:
+            pass
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    # -----------------------------
+    # VOICE ANALYSIS
+    # -----------------------------
+    if audio:
+        fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
+        audio.save(tmp_path)
+
+        try:
+            wav_path = _convert_to_pcm_wav(tmp_path)
+
+            result = calculate_voice_stress(wav_path)
+            _, _, _, _, voice_score = result
+
+        except:
+            pass
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    # -----------------------------
+    # COMBINE
+    # -----------------------------
+    final_score, level = combine_stress(face_score, voice_score, text_score)
+
+    response = _enrich_response(final_score, emotion)
+    response["stress_level"] = final_score
+
+    return jsonify(response), 200
+
+
+
+
 
 @app.route("/analyze-text-simple", methods=["POST"])
 def analyze_text_simple():
@@ -804,3 +885,26 @@ if __name__ == "__main__":
     # use_reloader=False prevents the watchdog from restarting the server
     # when TensorFlow/DeepFace writes cache files during analysis.
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+
+
+def combine_stress(face_score, voice_score, text_score):
+
+    final_score = int(min(
+        (0.25 * face_score) +
+        (0.35 * voice_score) +
+        (0.40 * text_score),
+        100
+    ))
+
+    if final_score <= 20:
+        level = "No Stress"
+    elif final_score <= 45:
+        level = "Low Stress"
+    elif final_score <= 70:
+        level = "Moderate Stress"
+    else:
+        level = "High Stress"
+
+    return final_score, level
+
+
