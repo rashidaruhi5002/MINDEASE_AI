@@ -1,110 +1,9 @@
-# import cv2
-# from deepface import DeepFace
-# import time
-# import numpy as np
-
-# # ---------------------------
-# # Emotion → Stress Mapping (IMPROVED)
-# # ---------------------------
-# def get_stress_from_emotion(emotion):
-#     mapping = {
-#         "happy": 5,
-#         "neutral": 20,
-#         "surprise": 40,
-#         "sad": 65,       # 🔥 increased
-#         "fear": 80,
-#         "angry": 90,
-#         "disgust": 75
-#     }
-#     return mapping.get(emotion, 30)
-
-
-# print("Starting Face Stress Analysis (10 seconds)...")
-
-# cap = cv2.VideoCapture(0)
-
-# if not cap.isOpened():
-#     print("❌ Cannot access webcam")
-#     exit()
-
-# start_time = time.time()
-# stress_values = []
-
-# while True:
-#     ret, frame = cap.read()
-
-#     if not ret:
-#         print("❌ Camera error")
-#         break
-
-#     cv2.imshow("Face Stress Detection", frame)
-
-#     # ---------------------------
-#     # EMOTION DETECTION (NO RESTRICTIONS)
-#     # ---------------------------
-#     try:
-#         result = DeepFace.analyze(
-#             frame,
-#             actions=['emotion'],
-#             enforce_detection=False
-#         )
-
-#         emotion = result[0]['dominant_emotion']
-#         stress = get_stress_from_emotion(emotion)
-
-#         stress_values.append(stress)
-
-#         print(f"Emotion: {emotion} | Stress: {stress}%")
-
-#     except:
-#         pass
-
-#     # ---------------------------
-#     # STOP AFTER 10 SECONDS
-#     # ---------------------------
-#     if time.time() - start_time > 10:
-#         break
-
-#     if cv2.waitKey(1) & 0xFF == ord('q'):
-#         break
-
-
-# cap.release()
-# cv2.destroyAllWindows()
-
-# # ---------------------------
-# # FINAL RESULT
-# # ---------------------------
-# if len(stress_values) > 0:
-
-#     stress_intensity = sum(stress_values) // len(stress_values)
-
-#     if stress_intensity < 20:
-#         level = "No Stress"
-#     elif stress_intensity < 40:
-#         level = "Low Stress"
-#     elif stress_intensity < 60:   # 🔥 changed from 65 → 60
-#         level = "Moderate Stress"
-#     else:
-#         level = "High Stress"
-
-#     print("\n✅ Face Stress Analysis Complete")
-#     print("Stress Intensity:", stress_intensity, "%")
-#     print("Stress Level:", level)
-
-# else:
-#     print("❌ No face detected properly")
-
-
-
-
 import cv2
 from deepface import DeepFace
 import time
-import numpy as np
 
 # ---------------------------
-# Emotion → Stress Mapping (IMPROVED)
+# Emotion → Stress Mapping
 # ---------------------------
 def get_stress_from_emotion(emotion):
     mapping = {
@@ -120,20 +19,19 @@ def get_stress_from_emotion(emotion):
 
 
 # ---------------------------
-# MAIN FUNCTION
+# MAIN LIVE FUNCTION
 # ---------------------------
-def analyze_face():
+def analyze_face_live():
 
-    print("Starting Face Stress Analysis (10 seconds)...")
+    print("🎥 Starting LIVE Face Stress Analysis...")
 
     cap = cv2.VideoCapture(0)
 
     if not cap.isOpened():
         print("❌ Cannot access webcam")
-        return None
+        return
 
-    start_time = time.time()
-    stress_values = []
+    history = []  # 🔥 for smoothing
 
     while True:
         ret, frame = cap.read()
@@ -141,8 +39,6 @@ def analyze_face():
         if not ret:
             print("❌ Camera error")
             break
-
-        cv2.imshow("Face Stress Detection", frame)
 
         try:
             result = DeepFace.analyze(
@@ -154,56 +50,56 @@ def analyze_face():
             emotion = result[0]['dominant_emotion']
             stress = get_stress_from_emotion(emotion)
 
-            stress_values.append(stress)
+            # 🔁 SMOOTHING
+            history.append(stress)
+            if len(history) > 5:
+                history.pop(0)
 
-            print(f"Emotion: {emotion} | Stress: {stress}%")
+            final_stress = int(sum(history) / len(history))
+
+            # ---------------------------
+            # LEVEL
+            # ---------------------------
+            if final_stress < 20:
+                level = "No Stress"
+                color = (0, 255, 0)
+            elif final_stress < 40:
+                level = "Low Stress"
+                color = (0, 255, 255)
+            elif final_stress < 60:
+                level = "Moderate Stress"
+                color = (0, 165, 255)
+            else:
+                level = "High Stress"
+                color = (0, 0, 255)
+
+            # ---------------------------
+            # DISPLAY ON SCREEN 🔥
+            # ---------------------------
+            cv2.putText(frame, f"Emotion: {emotion}", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+            cv2.putText(frame, f"Stress: {final_stress}%", (20, 80),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+            cv2.putText(frame, f"Level: {level}", (20, 120),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
         except:
             pass
 
-        if time.time() - start_time > 10:
-            break
+        cv2.imshow("Live Face Stress Detection", frame)
 
+        # Press Q to exit
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
-    # ---------------------------
-    # FINAL RESULT (RETURN)
-    # ---------------------------
-    if len(stress_values) > 0:
-
-        stress_intensity = sum(stress_values) // len(stress_values)
-
-        if stress_intensity < 20:
-            level = "No Stress"
-        elif stress_intensity < 40:
-            level = "Low Stress"
-        elif stress_intensity < 60:
-            level = "Moderate Stress"
-        else:
-            level = "High Stress"
-
-        return {
-            "stress_level": level,
-            "stress_intensity": stress_intensity
-        }
-
-    else:
-        return None
-
 
 # ---------------------------
-# OPTIONAL TEST (SAFE)
+# RUN
 # ---------------------------
 if __name__ == "__main__":
-    result = analyze_face()
-
-    if result:
-        print("\n✅ Face Stress Analysis Complete")
-        print("Stress Intensity:", result["stress_intensity"], "%")
-        print("Stress Level:", result["stress_level"])
-    else:
-        print("❌ No face detected properly")
+    analyze_face_live()
