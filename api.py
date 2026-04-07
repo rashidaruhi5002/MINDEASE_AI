@@ -51,15 +51,14 @@ if _ffmpeg_shim_dir not in os.environ.get("PATH", ""):
     os.environ["PATH"] = _ffmpeg_shim_dir + os.pathsep + os.environ.get("PATH", "")
 
 from flask import Flask, request, jsonify
-from deepface import DeepFace
+# DeepFace import removed as per request to eliminate emotion-based stress
 
 # Import ONLY the paragraph analyser from the final text model.
 # The module loads its three HuggingFace pipelines at import time.
 from text_stress_finalmodule import analyze_paragraph
 
-# Import the emotion-to-stress mapping from the face model.
-# We do NOT call analyze_face() (it uses webcam/GUI).
-from face_stress_module import get_stress_from_emotion
+# Import the direct face API image processor
+from face_stress_module import analyze_face
 
 # ---------------------------------------------------------------------------
 # Import calculate_voice_stress from voice_stress_module WITHOUT executing
@@ -126,6 +125,35 @@ def _convert_to_pcm_wav(input_path: str) -> str:
             f"{result.stderr.decode(errors='replace')[:500]}"
         )
     return wav_path
+
+
+def combine_stress(face_score, voice_score, text_score):
+    """
+    Combines stress scores from multiple modalities with weighted averaging.
+    Weights: Face (25%), Voice (35%), Text (40%).
+    """
+    # Safety fallback: treats None as 0
+    face_score = face_score or 0
+    voice_score = voice_score or 0
+    text_score = text_score or 0
+
+    final_score = int(min(
+        (0.25 * face_score) +
+        (0.35 * voice_score) +
+        (0.40 * text_score),
+        100
+    ))
+
+    if final_score <= 20:
+        level = "No Stress"
+    elif final_score <= 45:
+        level = "Low Stress"
+    elif final_score <= 70:
+        level = "Moderate Stress"
+    else:
+        level = "High Stress"
+
+    return final_score, level
 
 
 app = Flask(__name__)
@@ -389,13 +417,103 @@ def _enrich_response(stress_level: int, emotion: str) -> dict:
     exercise = random.choice(_EXERCISES[tier])
 
     return {
-        "stress_score": stress_level,
+        "stress_level": int(stress_level),
+        "fatigue_level": 0,
         "emotion":      emotion,
         "message":      message,
         "suggestion":   suggestion,
         "exercise":     exercise,
     }
 
+
+def generate_future_simulation(text_input, emotion, stress):
+    """
+    Generates a simple future simulation based on user input.
+    """
+    try:
+        text = str(text_input).lower() if text_input else ""
+
+        # Determine current context
+        if "sleep" in text or "tired" in text:
+            context = "because of less sleep"
+            long_term_advice = "Improving your sleep can help you stay calm and focused."
+        elif "study" in text or "exam" in text:
+            context = "due to your study pressure"
+            long_term_advice = "Taking short breaks while studying will help you perform better."
+        elif "happy" in text or "good" in text:
+            context = "because of your positive mood"
+            long_term_advice = "Keeping up this positive mindset will give you great energy in the long term."
+        elif "stress" in text or "worried" in text:
+            context = "because you are feeling worried"
+            long_term_advice = "Practicing relaxation techniques will help protect your long term health."
+        else:
+            if emotion == "sad":
+                context = "because you are feeling down"
+                long_term_advice = "Doing things you enjoy will help lift your mood over time."
+            elif emotion == "angry":
+                context = "because you are frustrated"
+                long_term_advice = "Finding healthy ways to release frustration will bring you peace."
+            elif emotion == "happy":
+                context = "because you are feeling good"
+                long_term_advice = "Maintaining this outlook will support your overall long term well-being."
+            else:
+                context = "based on your current feelings"
+                long_term_advice = "Taking care of yourself daily builds a strong foundation for the future."
+
+        # Determine short term and medium term
+        if stress <= 30:
+            short_term = f"Next 2–3 days: You may continue to feel stable {context}."
+            mid_term = "This week: Things look good, and you will likely maintain your balance."
+        elif stress <= 60:
+            short_term = f"Next 2–3 days: You might feel a little uneasy {context}."
+            mid_term = "This week: If this continues, your stress could increase slightly."
+        else:
+            short_term = f"Next 2–3 days: You may feel quite exhausted {context}."
+            mid_term = "This week: Please be careful, as high stress might make it hard to focus."
+
+        return f"{short_term}\n{mid_term}\nLong term: {long_term_advice}"
+    except Exception:
+        return "Next 2–3 days: You might feel a bit tired.\nThis week: Take it easy to avoid stress.\nLong term: Staying relaxed helps keep you healthy and strong."
+
+def generate_reason(text_input, emotion, stress):
+    """
+    Extracts the reason for stress or mood from user text and emotion.
+    """
+    try:
+        text = str(text_input).lower() if text_input else ""
+        reason = ""
+
+        if "sleep" in text or "tired" in text:
+            reason = "lack of sleep"
+        elif "exam" in text or "study" in text:
+            reason = "study pressure"
+        elif "work" in text or "job" in text:
+            reason = "work stress"
+        elif "alone" in text or "lonely" in text:
+            reason = "loneliness"
+        elif "happy" in text or "good" in text:
+            reason = "Positive mood"
+
+        if not reason:
+            if emotion == "sad":
+                reason = "emotional stress"
+            elif emotion == "angry":
+                reason = "frustration"
+            elif emotion == "fear":
+                reason = "anxiety"
+            elif emotion == "happy":
+                reason = "Positive mood"
+            else:
+                reason = "daily challenges"
+
+        if "happy" in text or "good" in text or emotion == "happy":
+            return f"You are feeling good because of {reason}."
+        elif stress > 45:
+            return f"Stress is mainly caused by {reason}."
+        else:
+            return f"Your current mood is connected to {reason}."
+    except Exception:
+        return "Your current state is related to your daily life."
 
 
 # ---------------------------------------------------------------------------
@@ -453,8 +571,7 @@ def analyze_text():
     stress = result["stress_intensity"]
     emotion = result["dominant_emotion"]
     response = _enrich_response(stress, emotion)
-    # Keep original field for backward compatibility
-    response["stress_level"] = stress
+    response["stress_level"] = int(stress)
     return jsonify(response), 200
 
 
@@ -501,26 +618,19 @@ def analyze_face_endpoint():
         os.close(fd)
         file.save(tmp_path)
 
-        # ── 4. Run DeepFace analysis ─────────────────────────────────────
-        result = DeepFace.analyze(
-            img_path=tmp_path,
-            actions=['emotion'],
-            enforce_detection=False
-        )
-
-        # Handle result safely
-        if isinstance(result, list):
-            result = result[0]
-
-        emotion = result.get('dominant_emotion', 'neutral')
-
-        # Use the face model's mapping function to get stress score.
-        stress_score = get_stress_from_emotion(emotion)
-
-        response = _enrich_response(stress_score, emotion)
-        # Keep original field for backward compatibility
-        response["stress_level"] = stress_score
-        return jsonify(response), 200
+        # ── 4. Run Face analysis ─────────────────────────────────────
+        try:
+            face_result = analyze_face(tmp_path)
+            s_score = face_result.get("stress_level", 10)
+            f_score = face_result.get("fatigue_level", 0)
+            emotion = face_result.get("emotion", "neutral")
+            
+            response = _enrich_response(s_score, emotion)
+            response["fatigue_level"] = int(f_score)
+            
+            return jsonify(response), 200
+        except Exception:
+            return jsonify(_enrich_response(10, "neutral")), 200
 
     except Exception as e:
         return jsonify({
@@ -628,10 +738,12 @@ def analyze_voice_endpoint():
 
         for chunk_path in chunk_paths:
             result = calculate_voice_stress(chunk_path)
+            if not result or len(result) < 5:
+                continue
+
             emotion, recognized_text, text_level, stress_label, final_score = result
 
-            # Skip silent / "No Input" chunks.
-            if stress_label == "No Input":
+            if stress_label == "No Input" or final_score is None:
                 continue
 
             stress_scores.append(final_score)
@@ -648,8 +760,7 @@ def analyze_voice_endpoint():
         majority_emotion = Counter(emotions).most_common(1)[0][0]
 
         response = _enrich_response(avg_stress, majority_emotion)
-        # Keep original field for backward compatibility
-        response["stress_level"] = avg_stress
+        response["stress_level"] = int(avg_stress)
         return jsonify(response), 200
 
     except Exception as e:
@@ -788,15 +899,10 @@ def analyze_all():
         image.save(tmp_path)
 
         try:
-            result = DeepFace.analyze(tmp_path, actions=['emotion'], enforce_detection=False)
-            if isinstance(result, list):
-                result = result[0]
-
-            face_emotion = result.get("dominant_emotion", "neutral")
-            face_score = get_stress_from_emotion(face_emotion)
-
+            face_result = analyze_face(tmp_path)
+            face_score = face_result.get("stress_level", 10)
         except:
-            pass
+            face_score = 10
 
         finally:
             if os.path.exists(tmp_path):
@@ -823,14 +929,152 @@ def analyze_all():
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    # -----------------------------
-    # COMBINE
-    # -----------------------------
-    final_score, level = combine_stress(face_score, voice_score, text_score)
+    final_score, stress_category = combine_stress(face_score, voice_score, text_score)
 
     response = _enrich_response(final_score, emotion)
-    response["stress_level"] = final_score
+    response["stress_level"] = stress_category
+    return jsonify(response), 200
 
+
+
+
+@app.route("/combined-result", methods=["POST"])
+def combined_result():
+    """
+    Analyzes multiple modalities (text, image, audio) in PARALLEL and returns
+    a weighted stress result. Prevents timeouts by running all tasks simultaneously.
+    """
+    import concurrent.futures
+
+    # ── 1. Gather Inputs ──────────────────────────────────────────────────
+    text_data = request.form.get("text", "").strip()
+    image_file = request.files.get("image")
+    audio_file = request.files.get("audio")
+
+    # Shared default variables
+    face_score = 0
+    voice_score = 0
+    text_score = 0
+    dominant_emotion = "neutral"
+
+    # Temporary files tracker for cleanup
+    temps_to_clean = []
+
+    # ── 2. Define Analysis Tasks ──────────────────────────────────────────
+    
+    def task_text():
+        if not text_data: return None
+        print("TEXT START")
+        return analyze_paragraph(text_data)
+
+    def task_face():
+        if not image_file: return None
+        print("FACE START")
+        tmp_img = None
+        try:
+            ext = os.path.splitext(image_file.filename)[1].lower() or ".jpg"
+            fd, tmp_img = tempfile.mkstemp(suffix=ext)
+            os.close(fd)
+            image_file.save(tmp_img)
+            temps_to_clean.append(tmp_img)
+            return analyze_face(tmp_img)
+        except Exception as e:
+            print(f"FACE TASK ERROR: {e}")
+            return None
+
+    def task_voice():
+        if not audio_file: return None
+        print("VOICE START")
+        tmp_aud = None
+        wav_path = None
+        try:
+            ext = os.path.splitext(audio_file.filename)[1].lower() or ".wav"
+            fd, tmp_aud = tempfile.mkstemp(suffix=ext)
+            os.close(fd)
+            audio_file.save(tmp_aud)
+            temps_to_clean.append(tmp_aud)
+
+            wav_path = _convert_to_pcm_wav(tmp_aud)
+            temps_to_clean.append(wav_path)
+            
+            chunk_paths, _ = _split_wav_into_chunks(wav_path)
+            for cp in chunk_paths: temps_to_clean.append(cp)
+
+            if chunk_paths:
+                vres = calculate_voice_stress(chunk_paths[0])
+                if vres and len(vres) >= 5 and vres[3] != "No Input":
+                    return vres[4] # return voice_score
+            return None
+        except Exception as e:
+            print(f"VOICE TASK ERROR: {e}")
+            return None
+
+    # ── 3. Execute Tasks in Parallel ─────────────────────────────────────
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        f_text = executor.submit(task_text)
+        f_face = executor.submit(task_face)
+        f_voice = executor.submit(task_voice)
+
+        # Wait for all with a 30s cap
+        try:
+            res_text = f_text.result(timeout=25.0)
+            if res_text:
+                text_score = res_text.get("stress_intensity", 0)
+                dominant_emotion = res_text.get("dominant_emotion", "neutral")
+        except Exception as e:
+            print(f"TEXT TIMEOUT/ERROR: {e}")
+
+        try:
+            res_face = f_face.result(timeout=25.0)
+            if res_face:
+                face_score = res_face.get('stress_level', 0)
+        except Exception as e:
+            print(f"FACE TIMEOUT/ERROR: {e}")
+
+        try:
+            res_voice = f_voice.result(timeout=25.0)
+            if res_voice is not None:
+                voice_score = res_voice
+        except Exception as e:
+            print(f"VOICE TIMEOUT/ERROR: {e}")
+
+    # ── 4. Final Processing & Cleanup ────────────────────────────────────
+    # Clean up all temp files at once
+    for p in temps_to_clean:
+        if p and os.path.exists(p):
+            try: os.remove(p)
+            except: pass
+
+    # If all 0, return early
+    if text_score == 0 and face_score == 0 and voice_score == 0:
+        return jsonify({
+            "stress_level": 0,
+            "stress_category": "No Data",
+            "emotion": "neutral",
+            "message": "No valid input detected",
+            "future_simulation": "Provide valid input for analysis",
+            "face_score": 0, "voice_score": 0, "text_score": 0
+        }), 200
+
+    # Combine Results
+    final_score, stress_category = combine_stress(face_score, voice_score, text_score)
+    future_sim = generate_future_simulation(text_data, dominant_emotion, final_score)
+    reason = generate_reason(text_data, dominant_emotion, final_score)
+    
+    try:
+        response = _enrich_response(final_score, dominant_emotion)
+    except Exception:
+        response = {"stress_level": int(final_score), "fatigue_level": 0}
+
+    print("RESPONSE SENT")
+    response.update({
+        "reason": reason,
+        "future_simulation": future_sim,
+        "face_score": int(face_score),
+        "voice_score": int(voice_score),
+        "text_score": int(text_score),
+        "stress_category": stress_category
+    })
     return jsonify(response), 200
 
 
@@ -872,9 +1116,11 @@ def analyze_text_simple():
         return jsonify({"textStress": 0}), 200
 
     # ── 3. Compute keyword-based stress ───────────────────────────────────
-    stress = _keyword_stress(diary_text)
-
-    return jsonify({"textStress": stress}), 200
+    stress_score = _keyword_stress(diary_text)
+    
+    return jsonify({
+        "textStress": int(stress_score)
+    }), 200
 
 
 # ---------------------------------------------------------------------------
@@ -887,24 +1133,7 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
 
 
-def combine_stress(face_score, voice_score, text_score):
 
-    final_score = int(min(
-        (0.25 * face_score) +
-        (0.35 * voice_score) +
-        (0.40 * text_score),
-        100
-    ))
 
-    if final_score <= 20:
-        level = "No Stress"
-    elif final_score <= 45:
-        level = "Low Stress"
-    elif final_score <= 70:
-        level = "Moderate Stress"
-    else:
-        level = "High Stress"
-
-    return final_score, level
 
 

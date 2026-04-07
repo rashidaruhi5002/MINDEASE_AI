@@ -48,10 +48,21 @@ for file in os.listdir(folder):
 
         print(f"\nAnalyzing {file}...")
 
-        result = DeepFace.analyze(img_path=image_path, actions=['emotion'])
+        import cv2
+        frame = cv2.imread(image_path)
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = DeepFace.analyze(
+            img_path=frame_rgb,
+            actions=['emotion'],
+            enforce_detection=True,
+            detector_backend='retinaface'
+        )
 
-        emotions = result[0]['emotion']
-        dominant_emotion = result[0]['dominant_emotion']
+        if isinstance(result, list):
+            result = result[0]
+        
+        emotions = result['emotion']
+        dominant_emotion = result['dominant_emotion']
 
         print("Detected Emotion:", dominant_emotion)
 

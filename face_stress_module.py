@@ -1,105 +1,114 @@
+import os
 import cv2
-from deepface import DeepFace
 import time
+import logging
+from deepface import DeepFace
 
-# ---------------------------
-# Emotion → Stress Mapping
-# ---------------------------
-def get_stress_from_emotion(emotion):
-    mapping = {
-        "happy": 5,
-        "neutral": 20,
-        "surprise": 40,
-        "sad": 65,
-        "fear": 80,
-        "angry": 90,
-        "disgust": 75
-    }
-    return mapping.get(emotion, 30)
+# Suppress warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['GLOG_minloglevel'] = '2'
 
+# Global buffer for smoothing
+stress_buffer = []
 
-# ---------------------------
-# MAIN LIVE FUNCTION
-# ---------------------------
-def analyze_face_live():
+# PART 2: RESTORE MAPPING
+STRESS_MAPPING = {
+    "happy": 15,
+    "neutral": 35,
+    "surprise": 45,
+    "sad": 65,
+    "fear": 75,
+    "angry": 85,
+    "disgust": 70
+}
 
-    print("🎥 Starting LIVE Face Stress Analysis...")
+def analyze_face(image_path):
+    """
+    Restored DeepFace analysis system.
+    """
+    frame = cv2.imread(image_path)
+    if frame is None:
+        return {"stress_level": 35, "emotion": "neutral"}
+    
+    try:
+        # STEP 1: CONVERT TO RGB AND USE DEEPFACE
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = DeepFace.analyze(
+            frame_rgb,
+            actions=['emotion'],
+            enforce_detection=False,
+            detector_backend='opencv'
+        )
+        
+        # Safely handle result list or dict
+        if isinstance(result, list):
+            result = result[0]
+        emotion = result['dominant_emotion']
+        
+        # STEP 2: RESTORE MAPPING
+        stress = STRESS_MAPPING.get(emotion, 35)
+        
+        # STEP 3: ADD SMOOTHING
+        global stress_buffer
+        stress_buffer.append(stress)
+        if len(stress_buffer) > 5:
+            stress_buffer.pop(0)
+            
+        final_stress = sum(stress_buffer) / len(stress_buffer)
+        
+        # STEP 4: RETURN FORMAT
+        return {
+            "stress_level": int(final_stress),
+            "emotion": emotion
+        }
+    except Exception:
+        return {"stress_level": 35, "emotion": "neutral"}
 
+def analyze_face_single():
+    """
+    Captures a frame from the camera and processes it using the stable old system.
+    """
     cap = cv2.VideoCapture(0)
-
     if not cap.isOpened():
-        print("❌ Cannot access webcam")
-        return
+        return {"stress_level": 35, "emotion": "neutral"}
 
-    history = []  # 🔥 for smoothing
-
-    while True:
-        ret, frame = cap.read()
-
-        if not ret:
-            print("❌ Camera error")
-            break
-
-        try:
-            result = DeepFace.analyze(
-                frame,
-                actions=['emotion'],
-                enforce_detection=False
-            )
-
-            emotion = result[0]['dominant_emotion']
-            stress = get_stress_from_emotion(emotion)
-
-            # 🔁 SMOOTHING
-            history.append(stress)
-            if len(history) > 5:
-                history.pop(0)
-
-            final_stress = int(sum(history) / len(history))
-
-            # ---------------------------
-            # LEVEL
-            # ---------------------------
-            if final_stress < 20:
-                level = "No Stress"
-                color = (0, 255, 0)
-            elif final_stress < 40:
-                level = "Low Stress"
-                color = (0, 255, 255)
-            elif final_stress < 60:
-                level = "Moderate Stress"
-                color = (0, 165, 255)
-            else:
-                level = "High Stress"
-                color = (0, 0, 255)
-
-            # ---------------------------
-            # DISPLAY ON SCREEN 🔥
-            # ---------------------------
-            cv2.putText(frame, f"Emotion: {emotion}", (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-            cv2.putText(frame, f"Stress: {final_stress}%", (20, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-            cv2.putText(frame, f"Level: {level}", (20, 120),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-        except:
-            pass
-
-        cv2.imshow("Live Face Stress Detection", frame)
-
-        # Press Q to exit
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
+    # Stabilize
+    time.sleep(1)
+    ret, frame = cap.read()
     cap.release()
     cv2.destroyAllWindows()
 
+    if not ret:
+        return {"stress_level": 35, "emotion": "neutral"}
 
-# ---------------------------
-# RUN
-# ---------------------------
+    try:
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = DeepFace.analyze(
+            frame_rgb,
+            actions=['emotion'],
+            enforce_detection=True,
+            detector_backend='retinaface'
+        )
+
+        # Safely handle result list or dict
+        if isinstance(result, list):
+            result = result[0]
+        emotion = result['dominant_emotion']
+        stress = STRESS_MAPPING.get(emotion, 35)
+        
+        global stress_buffer
+        stress_buffer.append(stress)
+        if len(stress_buffer) > 5:
+            stress_buffer.pop(0)
+            
+        final_stress = sum(stress_buffer) / len(stress_buffer)
+        
+        return {
+            "stress_level": int(final_stress),
+            "emotion": emotion
+        }
+    except Exception:
+        return {"stress_level": 35, "emotion": "neutral"}
+
 if __name__ == "__main__":
-    analyze_face_live()
+    print(analyze_face_single())
